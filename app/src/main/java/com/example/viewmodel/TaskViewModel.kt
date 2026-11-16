@@ -36,7 +36,7 @@ sealed interface AiParseUiState {
 enum class TaskFilter(val label: String) {
   TODAY_UNFINISHED("今日待办"),
   URGENT_SOON("即将截止"),
-  TODAY_COMPLETED("今日已完成"),
+  TODAY_COMPLETED("今日已办"),
   ALL_SCHEDULED("全部日程"),
 }
 
@@ -101,6 +101,9 @@ class TaskViewModel(
   private val _pendingAiDraft = MutableStateFlow<ParsedTaskDraft?>(null)
   val pendingAiDraft: StateFlow<ParsedTaskDraft?> = _pendingAiDraft.asStateFlow()
 
+  private val _pendingMultiAiDrafts = MutableStateFlow<List<ParsedTaskDraft>>(emptyList())
+  val pendingMultiAiDrafts: StateFlow<List<ParsedTaskDraft>> = _pendingMultiAiDrafts.asStateFlow()
+
   fun setFilter(filter: TaskFilter) {
     _selectedFilter.value = filter
   }
@@ -134,10 +137,58 @@ class TaskViewModel(
     _pendingAiDraft.value = null
   }
 
+  fun clearMultiAiDrafts() {
+    _pendingMultiAiDrafts.value = emptyList()
+  }
+
+  fun removeDraftFromBatch(index: Int) {
+    val current = _pendingMultiAiDrafts.value
+    if (index in current.indices) {
+      _pendingMultiAiDrafts.value = current.toMutableList().apply { removeAt(index) }
+    }
+  }
+
+  fun pickSingleDraftFromBatch(index: Int) {
+    val current = _pendingMultiAiDrafts.value
+    if (index !in current.indices) return
+    val picked = current[index]
+    _pendingMultiAiDrafts.value = current.toMutableList().apply { removeAt(index) }
+    _selectedTaskId.value = null
+    _isCreatingNewTask.value = true
+    _pendingAiDraft.value = picked
+  }
+
+  fun createTasksFromDrafts(drafts: List<ParsedTaskDraft>, onSaved: () -> Unit = {}) {
+    if (drafts.isEmpty()) return
+    viewModelScope.launch {
+      _isSaving.value = true
+      val inputs = drafts.map { draft ->
+        LocalTasksStore.NewTaskInput(
+          title = draft.title,
+          notes = draft.notes,
+          deadlineMillis = draft.deadlineMillis,
+          priority = draft.priority,
+          category = draft.category,
+          remindMinutesBefore = draft.remindMinutesBefore,
+        )
+      }
+      val ids = localStore.createTasks(inputs)
+      _isSaving.value = false
+      _pendingMultiAiDrafts.value = emptyList()
+      if (ids.isNotEmpty()) {
+        _selectedTaskId.value = ids.first()
+        _actionMessage.value = "已批量添加 ${ids.size} 项工作待办"
+      }
+      onSaved()
+    }
+  }
+
   fun parseSentence(
     sentence: String,
     autoCreate: Boolean,
+    allowMultiplePreview: Boolean = false,
     onDraftReady: () -> Unit = {},
+    onMultiDraftsReady: () -> Unit = {},
     onTaskCreated: () -> Unit = {},
   ) {
     val trimmed = sentence.trim()
@@ -148,26 +199,38 @@ class TaskViewModel(
     viewModelScope.launch {
       _aiParseState.value = AiParseUiState.Parsing
       val activeConfig = preferencesStore.getLlmConfigOnce()
-      val parseResult = taskParser.parseSentence(trimmed, activeConfig)
-      parseResult.onSuccess { draft ->
+      val parseResult = taskParser.parseSentenceMultiple(trimmed, activeConfig)
+      parseResult.onSuccess { drafts ->
         _aiParseState.value = AiParseUiState.Idle
         if (autoCreate) {
-          createTask(
-            title = draft.title,
-            notes = draft.notes,
-            deadlineMillis = draft.deadlineMillis,
-            priority = draft.priority,
-            category = draft.category,
-            remindMinutesBefore = draft.remindMinutesBefore,
-            onSaved = {
-              _actionMessage.value = "智能速记已创建「${draft.title}」"
+          if (drafts.size == 1) {
+            val draft = drafts.first()
+            createTask(
+              title = draft.title,
+              notes = draft.notes,
+              deadlineMillis = draft.deadlineMillis,
+              priority = draft.priority,
+              category = draft.category,
+              remindMinutesBefore = draft.remindMinutesBefore,
+              onSaved = {
+                _actionMessage.value = "智能速记已创建「${draft.title}」"
+                onTaskCreated()
+              },
+            )
+          } else {
+            createTasksFromDrafts(drafts) {
+              _actionMessage.value = "智能速记已批量创建 ${drafts.size} 项待办"
               onTaskCreated()
-            },
-          )
+            }
+          }
+        } else if (allowMultiplePreview && drafts.size > 1) {
+          _pendingMultiAiDrafts.value = drafts
+          _actionMessage.value = "已识别 ${drafts.size} 项待办，请确认添加"
+          onMultiDraftsReady()
         } else {
           _selectedTaskId.value = null
           _isCreatingNewTask.value = true
-          _pendingAiDraft.value = draft
+          _pendingAiDraft.value = drafts.first()
           _actionMessage.value = "已智能填充工作内容、时限与分类，请确认"
           onDraftReady()
         }

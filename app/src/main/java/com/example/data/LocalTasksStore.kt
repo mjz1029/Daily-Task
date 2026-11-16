@@ -98,6 +98,45 @@ class LocalTasksStore(context: Context) {
     return newId
   }
 
+  data class NewTaskInput(
+    val title: String,
+    val notes: String,
+    val deadlineMillis: Long,
+    val priority: TaskPriority,
+    val category: String,
+    val remindMinutesBefore: Long,
+  )
+
+  suspend fun createTasks(items: List<NewTaskInput>): List<String> {
+    if (items.isEmpty()) return emptyList()
+    val now = System.currentTimeMillis()
+    val newRecords = items.mapNotNull { input ->
+      val cleanTitle = input.title.trim().take(120)
+      if (cleanTitle.isBlank()) return@mapNotNull null
+      val newId = "local_${UUID.randomUUID().toString().replace("-", "").take(16)}"
+      LocalTaskRecord(
+        id = newId,
+        title = cleanTitle,
+        notes = input.notes.trim().take(500),
+        deadlineMillis = input.deadlineMillis,
+        isCompleted = false,
+        completedAtMillis = 0L,
+        priority = input.priority.wireValue,
+        category = input.category.trim().ifBlank { "工作" }.take(20),
+        remindMinutesBefore = input.remindMinutesBefore.coerceIn(0L, 1440L),
+        createdAtMillis = now,
+        updatedAtMillis = now,
+      )
+    }
+    if (newRecords.isEmpty()) return emptyList()
+    appContext.localTasksDataStore.edit { prefs ->
+      val current = decodeRecords(prefs[TASKS_KEY]).toMutableList()
+      current.addAll(newRecords)
+      prefs[TASKS_KEY] = json.encodeToString(current)
+    }
+    return newRecords.map { it.id }
+  }
+
   suspend fun updateTask(task: TaskItem) {
     val now = System.currentTimeMillis()
     appContext.localTasksDataStore.edit { prefs ->

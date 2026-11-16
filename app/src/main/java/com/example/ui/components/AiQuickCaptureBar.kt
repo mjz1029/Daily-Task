@@ -125,7 +125,7 @@ fun AiQuickCaptureBar(
           onClearError()
         },
         placeholder = {
-          Text("输入工作安排与时间，如：下午5点半前交Q4周报，很急")
+          Text("一句话记一条或多条，如：上午10点开会，下午5点交周报很急")
         },
         singleLine = true,
         enabled = !isParsing,

@@ -44,6 +44,7 @@ import androidx.compose.material.icons.rounded.AllInclusive
 import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.CheckCircleOutline
 import androidx.compose.material.icons.rounded.Fullscreen
+import androidx.compose.material.icons.rounded.QrCodeScanner
 import androidx.compose.material.icons.rounded.Schedule
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Splitscreen
@@ -103,6 +104,7 @@ import com.example.ui.adaptive.FoldablePostureMode
 import com.example.ui.adaptive.rememberFoldableLayoutMetrics
 import com.example.ui.components.AiQuickCaptureBar
 import com.example.ui.components.FoldableLayoutModeSelector
+import com.example.ui.components.MultiAiDraftsSheetContent
 import com.example.ui.components.TaskCard
 import com.example.ui.components.TaskEditorContent
 import com.example.ui.components.TodayFocusHeader
@@ -110,6 +112,7 @@ import com.example.viewmodel.AiParseUiState
 import com.example.viewmodel.TaskFilter
 import com.example.viewmodel.TaskViewModel
 import com.example.viewmodel.UiState
+import com.example.util.CalendarHelper
 import com.example.widget.TodayTasksWidget
 import com.example.widget.WidgetSnapshotStore
 import kotlinx.coroutines.delay
@@ -146,10 +149,13 @@ fun TasksWorkspaceScreen(
   val llmConfig by viewModel.llmConfig.collectAsStateWithLifecycle()
   val aiParseState by viewModel.aiParseState.collectAsStateWithLifecycle()
   val pendingAiDraft by viewModel.pendingAiDraft.collectAsStateWithLifecycle()
+  val pendingMultiAiDrafts by viewModel.pendingMultiAiDrafts.collectAsStateWithLifecycle()
   val foldablePreference by viewModel.foldablePreference.collectAsStateWithLifecycle()
 
   var showSettingsSheet by remember { mutableStateOf(false) }
   var showCompactEditorSheet by remember { mutableStateOf(false) }
+  var showMultiDraftsSheet by remember { mutableStateOf(false) }
+  var singleTaskShareMode by remember { mutableStateOf<SingleTaskShareMode?>(null) }
   var aiBarExpandedOverride by rememberSaveable { mutableStateOf<Boolean?>(null) }
   var nowMillis by remember { mutableLongStateOf(System.currentTimeMillis()) }
 
@@ -256,11 +262,16 @@ fun TasksWorkspaceScreen(
       aiBarExpandedOverride ?: (metrics.mode == FoldablePostureMode.FULLSCREEN_EXPANDED)
 
     BackHandler(
-      enabled = showCompactEditorSheet || showSettingsSheet ||
+      enabled = showCompactEditorSheet || showSettingsSheet || showMultiDraftsSheet || singleTaskShareMode != null ||
         (hasPersistentEditorPane && selectedTask != null) ||
         (!hasPersistentEditorPane && isAiQuickBarExpanded && metrics.mode != FoldablePostureMode.FULLSCREEN_EXPANDED)
     ) {
       when {
+        singleTaskShareMode != null -> singleTaskShareMode = null
+        showMultiDraftsSheet -> {
+          showMultiDraftsSheet = false
+          viewModel.clearMultiAiDrafts()
+        }
         showSettingsSheet -> showSettingsSheet = false
         showCompactEditorSheet -> {
           showCompactEditorSheet = false
@@ -300,6 +311,16 @@ fun TasksWorkspaceScreen(
             }
           },
           actions = {
+            IconButton(
+              onClick = { singleTaskShareMode = SingleTaskShareMode.Receive },
+              modifier = Modifier.testTag("top_bar_qr_receive_button"),
+            ) {
+              Icon(
+                imageVector = Icons.Rounded.QrCodeScanner,
+                contentDescription = "扫码或填码接收待办",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+              )
+            }
             IconButton(
               onClick = { showSettingsSheet = true },
               modifier = Modifier.testTag("open_settings_button"),
@@ -451,6 +472,7 @@ fun TasksWorkspaceScreen(
                       selectedFilter = selectedFilter,
                       nowMillis = nowMillis,
                       onToggleComplete = viewModel::toggleTaskCompletion,
+                      onDeleteTask = { task -> viewModel.deleteTask(task.id) },
                       onSelectTask = { task -> viewModel.selectTask(task.id) },
                       modifier = Modifier.weight(1f),
                       bottomContentPadding = 8.dp,
@@ -526,6 +548,18 @@ fun TasksWorkspaceScreen(
                         isSaving = isSaving,
                         showCloseButton = selectedTask != null && !isCreatingNewTask,
                         onClose = { viewModel.closeEditor() },
+                        onAddToCalendar = { task ->
+                          val launched = CalendarHelper.openSystemCalendarInsert(context, task)
+                          if (!launched) {
+                            scope.launch { snackbarHostState.showSnackbar("未检测到可用的系统日历应用") }
+                          }
+                        },
+                        onShareTask = { task ->
+                          singleTaskShareMode = SingleTaskShareMode.Share(task)
+                        },
+                        onOpenReceiveShared = {
+                          singleTaskShareMode = SingleTaskShareMode.Receive
+                        },
                         onSaveNew = { title, notes, deadline, priority, category, remind ->
                           if (remind > 0L) requestNotificationPermissionIfNeeded()
                           viewModel.createTask(
@@ -605,9 +639,14 @@ fun TasksWorkspaceScreen(
                             viewModel.parseSentence(
                               sentence = sentence,
                               autoCreate = false,
+                              allowMultiplePreview = true,
                               onDraftReady = {
                                 clear()
                                 showCompactEditorSheet = true
+                              },
+                              onMultiDraftsReady = {
+                                clear()
+                                showMultiDraftsSheet = true
                               },
                             )
                           },
@@ -657,6 +696,7 @@ fun TasksWorkspaceScreen(
                         selectedFilter = selectedFilter,
                         nowMillis = nowMillis,
                         onToggleComplete = viewModel::toggleTaskCompletion,
+                      onDeleteTask = { task -> viewModel.deleteTask(task.id) },
                         onSelectTask = { task ->
                           viewModel.selectTask(task.id)
                           showCompactEditorSheet = true
@@ -708,6 +748,7 @@ fun TasksWorkspaceScreen(
                       selectedFilter = selectedFilter,
                       nowMillis = nowMillis,
                       onToggleComplete = viewModel::toggleTaskCompletion,
+                      onDeleteTask = { task -> viewModel.deleteTask(task.id) },
                       onSelectTask = { task -> viewModel.selectTask(task.id) },
                       modifier = Modifier.weight(1f),
                     )
@@ -771,6 +812,18 @@ fun TasksWorkspaceScreen(
                         isSaving = isSaving,
                         showCloseButton = selectedTask != null && !isCreatingNewTask,
                         onClose = { viewModel.closeEditor() },
+                        onAddToCalendar = { task ->
+                          val launched = CalendarHelper.openSystemCalendarInsert(context, task)
+                          if (!launched) {
+                            scope.launch { snackbarHostState.showSnackbar("未检测到可用的系统日历应用") }
+                          }
+                        },
+                        onShareTask = { task ->
+                          singleTaskShareMode = SingleTaskShareMode.Share(task)
+                        },
+                        onOpenReceiveShared = {
+                          singleTaskShareMode = SingleTaskShareMode.Receive
+                        },
                         onSaveNew = { title, notes, deadline, priority, category, remind ->
                           if (remind > 0L) requestNotificationPermissionIfNeeded()
                           viewModel.createTask(
@@ -846,9 +899,14 @@ fun TasksWorkspaceScreen(
                           viewModel.parseSentence(
                             sentence = sentence,
                             autoCreate = false,
+                            allowMultiplePreview = true,
                             onDraftReady = {
                               clear()
                               showCompactEditorSheet = true
+                            },
+                            onMultiDraftsReady = {
+                              clear()
+                              showMultiDraftsSheet = true
                             },
                           )
                         },
@@ -876,6 +934,7 @@ fun TasksWorkspaceScreen(
                       selectedFilter = selectedFilter,
                       nowMillis = nowMillis,
                       onToggleComplete = viewModel::toggleTaskCompletion,
+                      onDeleteTask = { task -> viewModel.deleteTask(task.id) },
                       onSelectTask = { task ->
                         viewModel.selectTask(task.id)
                         showCompactEditorSheet = true
@@ -917,9 +976,14 @@ fun TasksWorkspaceScreen(
                         viewModel.parseSentence(
                           sentence = sentence,
                           autoCreate = false,
+                          allowMultiplePreview = true,
                           onDraftReady = {
                             clear()
                             showCompactEditorSheet = true
+                          },
+                          onMultiDraftsReady = {
+                            clear()
+                            showMultiDraftsSheet = true
                           },
                         )
                       },
@@ -949,6 +1013,7 @@ fun TasksWorkspaceScreen(
                     selectedFilter = selectedFilter,
                     nowMillis = nowMillis,
                     onToggleComplete = viewModel::toggleTaskCompletion,
+                    onDeleteTask = { task -> viewModel.deleteTask(task.id) },
                     onSelectTask = { task ->
                       viewModel.selectTask(task.id)
                       showCompactEditorSheet = true
@@ -991,6 +1056,19 @@ fun TasksWorkspaceScreen(
               showCompactEditorSheet = false
               viewModel.closeEditor()
             }
+          },
+          onAddToCalendar = { task ->
+            val launched = CalendarHelper.openSystemCalendarInsert(context, task)
+            if (!launched) {
+              scope.launch { snackbarHostState.showSnackbar("未检测到可用的系统日历应用") }
+            }
+          },
+          onShareTask = { task ->
+            singleTaskShareMode = SingleTaskShareMode.Share(task)
+          },
+          onOpenReceiveShared = {
+            showCompactEditorSheet = false
+            singleTaskShareMode = SingleTaskShareMode.Receive
           },
           onSaveNew = { title, notes, deadline, priority, category, remind ->
             if (remind > 0L) requestNotificationPermissionIfNeeded()
@@ -1061,6 +1139,67 @@ fun TasksWorkspaceScreen(
             scope.launch { snackbarHostState.showSnackbar(msg) }
           },
           onDismiss = { showSettingsSheet = false },
+        )
+      }
+    }
+
+    if (showMultiDraftsSheet && pendingMultiAiDrafts.isNotEmpty()) {
+      val multiSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+      ModalBottomSheet(
+        onDismissRequest = {
+          showMultiDraftsSheet = false
+          viewModel.clearMultiAiDrafts()
+        },
+        sheetState = multiSheetState,
+        containerColor = MaterialTheme.colorScheme.surfaceContainerLowest,
+      ) {
+        MultiAiDraftsSheetContent(
+          drafts = pendingMultiAiDrafts,
+          isSaving = isSaving,
+          onEditSingle = { index ->
+            showMultiDraftsSheet = false
+            viewModel.pickSingleDraftFromBatch(index)
+            if (!hasPersistentEditorPane) {
+              showCompactEditorSheet = true
+            }
+          },
+          onRemoveDraft = { index ->
+            viewModel.removeDraftFromBatch(index)
+            if (pendingMultiAiDrafts.size <= 1) {
+              showMultiDraftsSheet = false
+            }
+          },
+          onConfirmAll = {
+            requestNotificationPermissionIfNeeded()
+            viewModel.createTasksFromDrafts(pendingMultiAiDrafts) {
+              showMultiDraftsSheet = false
+            }
+          },
+          onDismiss = {
+            showMultiDraftsSheet = false
+            viewModel.clearMultiAiDrafts()
+          },
+        )
+      }
+    }
+
+    val activeShareMode = singleTaskShareMode
+    if (activeShareMode != null) {
+      val shareSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+      ModalBottomSheet(
+        onDismissRequest = { singleTaskShareMode = null },
+        sheetState = shareSheetState,
+        containerColor = MaterialTheme.colorScheme.surfaceContainerLowest,
+      ) {
+        SingleTaskShareSheetContent(
+          mode = activeShareMode,
+          onImportTaskRecords = { records ->
+            viewModel.importTransferredRecords(records, replaceExisting = false)
+          },
+          onNotifyMessage = { msg ->
+            scope.launch { snackbarHostState.showSnackbar(msg) }
+          },
+          onDismiss = { singleTaskShareMode = null },
         )
       }
     }
@@ -1145,6 +1284,7 @@ private fun TaskListColumn(
   selectedFilter: TaskFilter,
   nowMillis: Long,
   onToggleComplete: (TaskItem) -> Unit,
+  onDeleteTask: (TaskItem) -> Unit,
   onSelectTask: (TaskItem) -> Unit,
   modifier: Modifier = Modifier,
   bottomContentPadding: androidx.compose.ui.unit.Dp = 16.dp,
@@ -1192,7 +1332,7 @@ private fun TaskListColumn(
               color = MaterialTheme.colorScheme.onSurface,
             )
             Text(
-              text = "试试「智能速记」或点击「随时添加」记录工作",
+              text = "试试「智能速记」或点击「随时添加」记录工作，左滑卡片可快速已办或删除",
               style = MaterialTheme.typography.bodySmall,
               color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -1211,6 +1351,7 @@ private fun TaskListColumn(
               isSelected = task.id == selectedTaskId,
               nowMillis = nowMillis,
               onToggleComplete = { onToggleComplete(task) },
+              onDelete = { onDeleteTask(task) },
               onClick = { onSelectTask(task) },
             )
           }

@@ -21,7 +21,10 @@ import androidx.compose.material.icons.rounded.CalendarToday
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.DeleteOutline
+import androidx.compose.material.icons.rounded.EventAvailable
 import androidx.compose.material.icons.rounded.NotificationsActive
+import androidx.compose.material.icons.rounded.QrCode2
+import androidx.compose.material.icons.rounded.QrCodeScanner
 import androidx.compose.material.icons.rounded.Schedule
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -75,6 +78,9 @@ fun TaskEditorContent(
   isSaving: Boolean,
   showCloseButton: Boolean,
   onClose: () -> Unit,
+  onAddToCalendar: (TaskItem) -> Unit = {},
+  onShareTask: (TaskItem) -> Unit = {},
+  onOpenReceiveShared: () -> Unit = {},
   onSaveNew: (
     title: String,
     notes: String,
@@ -155,9 +161,29 @@ fun TaskEditorContent(
           color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
       }
-      if (showCloseButton) {
-        IconButton(onClick = onClose, modifier = Modifier.testTag("close_editor_button")) {
-          Icon(imageVector = Icons.Rounded.Close, contentDescription = "关闭编辑面板")
+      Row(
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+      ) {
+        if (editingTask == null) {
+          FilledTonalButton(
+            onClick = onOpenReceiveShared,
+            shape = RoundedCornerShape(12.dp),
+            modifier = Modifier.testTag("editor_scan_receive_button"),
+          ) {
+            Icon(
+              imageVector = Icons.Rounded.QrCodeScanner,
+              contentDescription = null,
+              modifier = Modifier.size(16.dp),
+            )
+            Spacer(modifier = Modifier.width(4.dp))
+            Text("扫码/填码导入", style = MaterialTheme.typography.labelMedium)
+          }
+        }
+        if (showCloseButton) {
+          IconButton(onClick = onClose, modifier = Modifier.testTag("close_editor_button")) {
+            Icon(imageVector = Icons.Rounded.Close, contentDescription = "关闭编辑面板")
+          }
         }
       }
     }
@@ -425,6 +451,47 @@ fun TaskEditorContent(
     }
 
     Spacer(modifier = Modifier.height(4.dp))
+
+    if (editingTask != null) {
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+      ) {
+        FilledTonalButton(
+          onClick = { onAddToCalendar(editingTask) },
+          modifier = Modifier
+            .weight(1f)
+            .height(46.dp)
+            .testTag("add_to_calendar_button"),
+          shape = RoundedCornerShape(14.dp),
+        ) {
+          Icon(
+            imageVector = Icons.Rounded.EventAvailable,
+            contentDescription = null,
+            modifier = Modifier.size(18.dp),
+          )
+          Spacer(modifier = Modifier.width(6.dp))
+          Text("加到系统日历")
+        }
+
+        FilledTonalButton(
+          onClick = { onShareTask(editingTask) },
+          modifier = Modifier
+            .weight(1f)
+            .height(46.dp)
+            .testTag("share_single_task_button"),
+          shape = RoundedCornerShape(14.dp),
+        ) {
+          Icon(
+            imageVector = Icons.Rounded.QrCode2,
+            contentDescription = null,
+            modifier = Modifier.size(18.dp),
+          )
+          Spacer(modifier = Modifier.width(6.dp))
+          Text("扫码/填码分享")
+        }
+      }
+    }
 
     // Action Buttons
     Row(

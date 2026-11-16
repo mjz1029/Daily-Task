@@ -44,7 +44,7 @@ class NaturalLanguageTaskParser {
   }
 
   private val geminiStructuredModel by lazy {
-    val taskSchema = Schema.obj(
+    val taskItemSchema = Schema.obj(
       properties = mapOf(
         "title" to Schema.string(description = "Concise Chinese task title, 2 to 60 characters"),
         "notes" to Schema.string(description = "Optional extra context, deliverables, or participants"),
@@ -63,9 +63,17 @@ class NaturalLanguageTaskParser {
       ),
       optionalProperties = listOf("notes"),
     )
+    val rootSchema = Schema.obj(
+      properties = mapOf(
+        "tasks" to Schema.array(
+          items = taskItemSchema,
+          description = "List of 1 or more extracted tasks from the user input",
+        ),
+      ),
+    )
     val config = generationConfig {
       responseMimeType = "application/json"
-      responseSchema = taskSchema
+      responseSchema = rootSchema
       temperature = 0.2f
     }
     Firebase.ai.generativeModel(
@@ -79,12 +87,22 @@ class NaturalLanguageTaskParser {
     config: LlmConfig,
     nowMillis: Long = System.currentTimeMillis(),
   ): Result<ParsedTaskDraft> {
+    return parseSentenceMultiple(sentence, config, nowMillis).map { drafts ->
+      drafts.first()
+    }
+  }
+
+  suspend fun parseSentenceMultiple(
+    sentence: String,
+    config: LlmConfig,
+    nowMillis: Long = System.currentTimeMillis(),
+  ): Result<List<ParsedTaskDraft>> {
     val trimmed = sentence.trim()
     if (trimmed.isBlank()) {
-      return Result.failure(IllegalArgumentException("请输入一句待办描述"))
+      return Result.failure(IllegalArgumentException("请输入要记录的工作内容与时间"))
     }
     if (config.provider.requiresApiKey && config.apiKey.isBlank()) {
-      return Result.failure(IllegalStateException("当前选择了 ${config.provider.displayName}，请先填写 API Key 或切换为内置 Gemini"))
+      return Result.failure(IllegalStateException("当前选择了 ${config.provider.displayName}，请先在设置中填写 API Key 或切换为内置 Gemini"))
     }
 
     val prompt = buildParsingPrompt(trimmed, nowMillis)
@@ -95,8 +113,12 @@ class NaturalLanguageTaskParser {
         LlmProvider.ANTHROPIC_CLAUDE -> callAnthropicClaude(prompt, config)
         else -> callOpenAiCompatible(prompt, config)
       }
-      val draft = parseDraftJson(rawJson = rawJson, fallbackSentence = trimmed, nowMillis = nowMillis)
-      Result.success(draft)
+      val drafts = parseDraftsJson(rawJson = rawJson, fallbackSentence = trimmed, nowMillis = nowMillis)
+      if (drafts.isEmpty()) {
+        Result.failure(IllegalStateException("未识别出有效的待办事项，请换个说法重试"))
+      } else {
+        Result.success(drafts)
+      }
     } catch (e: TimeoutCancellationException) {
       Log.e(TAG, "LLM parsing timed out", e)
       Result.failure(IllegalStateException("大模型解析超时，请检查网络或重试"))
@@ -113,7 +135,7 @@ class NaturalLanguageTaskParser {
       return Result.failure(IllegalArgumentException("请先填写 API Key"))
     }
     return try {
-      val testPrompt = "Reply with strictly this JSON: {\"status\":\"ok\",\"title\":\"测试\",\"deadlineLocal\":\"2026-12-31 18:00\",\"priority\":\"medium\",\"category\":\"工作\",\"remindMinutesBefore\":15}"
+      val testPrompt = "Reply with strictly this JSON: {\"tasks\":[{\"title\":\"测试\",\"notes\":\"\",\"deadlineLocal\":\"2026-12-31 18:00\",\"priority\":\"medium\",\"category\":\"工作\",\"remindMinutesBefore\":15}]}"
       val raw = when (config.provider) {
         LlmProvider.GEMINI_BUILTIN -> callFirebaseGemini(testPrompt)
         LlmProvider.ANTHROPIC_CLAUDE -> callAnthropicClaude(testPrompt, config)
@@ -179,7 +201,6 @@ class NaturalLanguageTaskParser {
         )
 
         val responseStr = if (firstResult.isFailure && firstResult.exceptionOrNull()?.message?.contains("400") == true) {
-          // Some OpenAI-compatible gateways reject response_format; retry cleanly without it
           firstPayload.remove("response_format")
           executeJsonPost(
             url = endpoint,
@@ -215,7 +236,7 @@ class NaturalLanguageTaskParser {
 
         val payload = JSONObject().apply {
           put("model", config.modelName.trim())
-          put("max_tokens", 512)
+          put("max_tokens", 1024)
           put("temperature", 0.2)
           put("system", SYSTEM_PROMPT)
           put(
@@ -289,9 +310,9 @@ class NaturalLanguageTaskParser {
     private const val TAG = "NLTaskParser"
 
     private const val SYSTEM_PROMPT =
-      "You extract a single structured work task from one Chinese or English user sentence. " +
-        "Return ONLY valid JSON with fields: title, notes, deadlineLocal (yyyy-MM-dd HH:mm), " +
-        "priority (high|medium|low), category (工作|会议|沟通|开发|个人), remindMinutesBefore (0|5|15|30|60)."
+      "You extract one OR multiple structured work tasks from a Chinese or English user sentence. " +
+        "If the user mentions several independent actions or deadlines in one sentence, split them into separate task objects inside the 'tasks' array. " +
+        "Return ONLY valid JSON of the form {\"tasks\": [{title, notes, deadlineLocal (yyyy-MM-dd HH:mm), priority (high|medium|low), category (工作|会议|沟通|开发|个人), remindMinutesBefore (0|5|15|30|60)}]}."
 
     fun buildParsingPrompt(sentence: String, nowMillis: Long): String {
       val fmt = SimpleDateFormat("yyyy-MM-dd HH:mm EEEE", Locale.CHINA)
@@ -299,13 +320,13 @@ class NaturalLanguageTaskParser {
       val tzId = TimeZone.getDefault().id
       return """
         当前本地时间：$nowFormatted (时区: $tzId)
-        请将下面这句用户描述解析为一条工作待办事项，并严格只返回 JSON 对象（不要额外解释）：
+        请分析下面这句用户输入，识别其中包含的 1 个或多个独立工作待办事项（如果一句话里有多个时间或多项不同工作，请拆分为多条），严格只返回 JSON 对象 `{"tasks": [...]}`（不要额外解释）：
         用户输入：「$sentence」
 
-        字段要求：
+        每条待办对象字段要求：
         - title: 提炼后的清晰工作标题（简明扼要，不超过60字）
         - notes: 补充说明、交付物或关联人物；如果没有则为空字符串 ""
-        - deadlineLocal: 格式必须为 "yyyy-MM-dd HH:mm"。若用户只说了"下班前/今天下午/今晚/3点"，请按当前时间合理推算为今天或最近未来时刻；若完全未提时间，默认为当前时间 1 小时后（或今天 18:00）
+        - deadlineLocal: 格式必须为 "yyyy-MM-dd HH:mm"。若用户只说了"上午10点/下班前/今天下午/今晚/3点"，请按当前时间合理推算；若某项未单独提时间，可继承句中主时间或默认为当前时间 1 小时后
         - priority: 仅限 "high"、"medium"、"low"（含"急/马上/立刻/重要/必须"取 "high"）
         - category: 仅限 "工作"、"会议"、"沟通"、"开发"、"个人"
         - remindMinutesBefore: 仅限整数 0、5、15、30、60（默认 15）
@@ -317,9 +338,48 @@ class NaturalLanguageTaskParser {
       fallbackSentence: String,
       nowMillis: Long = System.currentTimeMillis(),
     ): ParsedTaskDraft {
-      val cleaned = extractJsonObjectString(rawJson)
-      val json = JSONObject(cleaned)
+      return parseDraftsJson(rawJson, fallbackSentence, nowMillis).first()
+    }
 
+    fun parseDraftsJson(
+      rawJson: String,
+      fallbackSentence: String,
+      nowMillis: Long = System.currentTimeMillis(),
+    ): List<ParsedTaskDraft> {
+      val cleaned = extractJsonString(rawJson)
+      if (cleaned.startsWith("[")) {
+        val arr = JSONArray(cleaned)
+        return parseJsonArray(arr, fallbackSentence, nowMillis)
+      }
+      val root = JSONObject(cleaned)
+      val tasksArray = root.optJSONArray("tasks")
+        ?: root.optJSONArray("items")
+        ?: root.optJSONArray("todos")
+      if (tasksArray != null) {
+        val list = parseJsonArray(tasksArray, fallbackSentence, nowMillis)
+        if (list.isNotEmpty()) return list
+      }
+      return listOf(parseSingleObject(root, fallbackSentence, nowMillis))
+    }
+
+    private fun parseJsonArray(
+      arr: JSONArray,
+      fallbackSentence: String,
+      nowMillis: Long,
+    ): List<ParsedTaskDraft> {
+      val result = mutableListOf<ParsedTaskDraft>()
+      for (i in 0 until arr.length()) {
+        val obj = arr.optJSONObject(i) ?: continue
+        result.add(parseSingleObject(obj, fallbackSentence, nowMillis))
+      }
+      return result
+    }
+
+    private fun parseSingleObject(
+      json: JSONObject,
+      fallbackSentence: String,
+      nowMillis: Long,
+    ): ParsedTaskDraft {
       val title = json.optString("title")
         .trim()
         .ifBlank { fallbackSentence.trim().take(60) }
@@ -348,6 +408,21 @@ class NaturalLanguageTaskParser {
       )
     }
 
+    fun extractJsonString(raw: String): String {
+      val trimmed = raw.trim()
+      val objStart = trimmed.indexOf('{')
+      val arrStart = trimmed.indexOf('[')
+      return if (arrStart in 0 until (if (objStart >= 0) objStart else Int.MAX_VALUE)) {
+        val arrEnd = trimmed.lastIndexOf(']')
+        if (arrEnd > arrStart) trimmed.substring(arrStart, arrEnd + 1) else trimmed
+      } else if (objStart >= 0) {
+        val objEnd = trimmed.lastIndexOf('}')
+        if (objEnd > objStart) trimmed.substring(objStart, objEnd + 1) else trimmed
+      } else {
+        trimmed
+      }
+    }
+
     fun extractJsonObjectString(raw: String): String {
       val trimmed = raw.trim()
       val start = trimmed.indexOf('{')
@@ -371,7 +446,6 @@ class NaturalLanguageTaskParser {
           }
         }
       }
-      // Fallback: 1 hour from now, rounded to nearest 5 minutes
       val cal = Calendar.getInstance().apply {
         timeInMillis = nowMillis + 60 * 60_000L
         set(Calendar.SECOND, 0)

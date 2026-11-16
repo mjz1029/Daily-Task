@@ -86,4 +86,74 @@ class NaturalLanguageTaskParserTest {
 
     store.saveFoldablePreference(FoldableDisplayPreference.AUTO)
   }
+
+  @Test
+  fun parseDraftsJson_extractsMultipleTasksFromWrappedTasksObject() {
+    val multiJson = """
+      ```json
+      {
+        "tasks": [
+          {
+            "title": "上午10点产品评审会",
+            "notes": "准备原型图",
+            "deadlineLocal": "2026-11-16 10:00",
+            "priority": "high",
+            "category": "会议",
+            "remindMinutesBefore": 15
+          },
+          {
+            "title": "发送季度报价单给王总",
+            "notes": "",
+            "deadlineLocal": "2026-11-16 15:30",
+            "priority": "medium",
+            "category": "沟通",
+            "remindMinutesBefore": 30
+          },
+          {
+            "title": "下班顺路取快递",
+            "notes": "菜鸟驿站",
+            "deadlineLocal": "2026-11-16 19:00",
+            "priority": "low",
+            "category": "个人",
+            "remindMinutesBefore": 5
+          }
+        ]
+      }
+      ```
+    """.trimIndent()
+
+    val drafts = NaturalLanguageTaskParser.parseDraftsJson(
+      rawJson = multiJson,
+      fallbackSentence = "默认",
+    )
+
+    assertEquals(3, drafts.size)
+    assertEquals("上午10点产品评审会", drafts[0].title)
+    assertEquals(TaskPriority.HIGH, drafts[0].priority)
+    assertEquals("会议", drafts[0].category)
+
+    assertEquals("发送季度报价单给王总", drafts[1].title)
+    assertEquals("沟通", drafts[1].category)
+    assertEquals(30L, drafts[1].remindMinutesBefore)
+
+    assertEquals("下班顺路取快递", drafts[2].title)
+    assertEquals(TaskPriority.LOW, drafts[2].priority)
+    assertEquals("个人", drafts[2].category)
+  }
+
+  @Test
+  fun parseDraftsJson_handlesBareJsonArrayFallback() {
+    val bareArray = """
+      [
+        {"title": "任务一", "deadlineLocal": "2026-11-16 11:00", "priority": "high", "category": "工作", "remindMinutesBefore": 15},
+        {"title": "任务二", "deadlineLocal": "2026-11-16 16:00", "priority": "medium", "category": "开发", "remindMinutesBefore": 0}
+      ]
+    """.trimIndent()
+
+    val drafts = NaturalLanguageTaskParser.parseDraftsJson(bareArray, "默认")
+    assertEquals(2, drafts.size)
+    assertEquals("任务一", drafts[0].title)
+    assertEquals("任务二", drafts[1].title)
+    assertEquals("开发", drafts[1].category)
+  }
 }
