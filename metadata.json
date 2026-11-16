@@ -1,0 +1,6 @@
+{
+  "name": "今日待办",
+  "description": "纯单机今日工作待办提醒，适配折叠屏，支持智能速记、桌面小组件与配对码换机转移。",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

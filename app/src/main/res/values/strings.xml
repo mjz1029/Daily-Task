@@ -1,0 +1,7 @@
+<resources>
+    <string name="app_name">今日待办</string>
+    <string name="widget_description">纯单机实时显示今日未完成的工作与完成时限，支持一键完成、快速添加与配对码换机转移。</string>
+    <string name="widget_loading">正在加载今日工作…</string>
+    <string name="action_add_task">随时添加工作</string>
+    <string name="error_load_tasks">读取本机今日待办失败，请重试</string>
+</resources>

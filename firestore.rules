@@ -1,0 +1,117 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global safety net: deny all reads and writes by default
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidTask(data, userId) {
+      return data.userId is string &&
+             data.userId == userId &&
+             data.title is string &&
+             data.title.size() >= 1 &&
+             data.title.size() <= 120 &&
+             data.notes is string &&
+             data.notes.size() <= 500 &&
+             data.deadlineMillis is int &&
+             data.deadlineMillis > 0 &&
+             data.isCompleted is bool &&
+             data.completedAtMillis is int &&
+             data.completedAtMillis >= 0 &&
+             data.priority in ['high', 'medium', 'low'] &&
+             data.category is string &&
+             data.category.size() >= 1 &&
+             data.category.size() <= 20 &&
+             data.remindMinutesBefore is int &&
+             data.remindMinutesBefore >= 0 &&
+             data.remindMinutesBefore <= 1440 &&
+             data.createdAt is timestamp &&
+             data.createdAt <= request.time &&
+             data.updatedAt is timestamp &&
+             data.updatedAt <= request.time;
+    }
+
+    match /users/{userId}/tasks/{taskId} {
+      allow get: if isOwner(userId) && isValidId(taskId);
+      allow list: if isOwner(userId);
+
+      allow create: if isOwner(userId) &&
+                       isValidId(taskId) &&
+                       incoming().keys().hasAll([
+                         'userId',
+                         'title',
+                         'notes',
+                         'deadlineMillis',
+                         'isCompleted',
+                         'completedAtMillis',
+                         'priority',
+                         'category',
+                         'remindMinutesBefore',
+                         'createdAt',
+                         'updatedAt'
+                       ]) &&
+                       incoming().keys().hasOnly([
+                         'userId',
+                         'title',
+                         'notes',
+                         'deadlineMillis',
+                         'isCompleted',
+                         'completedAtMillis',
+                         'priority',
+                         'category',
+                         'remindMinutesBefore',
+                         'createdAt',
+                         'updatedAt'
+                       ]) &&
+                       isValidTask(incoming(), userId);
+
+      allow update: if isOwner(userId) &&
+                       isValidId(taskId) &&
+                       isValidTask(incoming(), userId) &&
+                       incoming().userId == existing().userId &&
+                       incoming().createdAt == existing().createdAt &&
+                       (
+                         incoming().diff(existing()).affectedKeys().hasOnly([
+                           'isCompleted',
+                           'completedAtMillis',
+                           'updatedAt'
+                         ]) ||
+                         incoming().diff(existing()).affectedKeys().hasOnly([
+                           'title',
+                           'notes',
+                           'deadlineMillis',
+                           'isCompleted',
+                           'completedAtMillis',
+                           'priority',
+                           'category',
+                           'remindMinutesBefore',
+                           'updatedAt'
+                         ])
+                       );
+
+      allow delete: if isOwner(userId) && isValidId(taskId);
+    }
+  }
+}

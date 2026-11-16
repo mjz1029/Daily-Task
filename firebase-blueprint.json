@@ -1,0 +1,79 @@
+{
+  "entities": {
+    "TaskItem": {
+      "title": "TaskItem",
+      "description": "A user's work task with deadline, priority, completion state, and reminder lead time.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Owner Firebase Auth UID."
+        },
+        "title": {
+          "type": "string",
+          "description": "Work task title (1 to 120 characters)."
+        },
+        "notes": {
+          "type": "string",
+          "description": "Optional work notes or checklist details (up to 500 characters)."
+        },
+        "deadlineMillis": {
+          "type": "integer",
+          "description": "Completion deadline timestamp in epoch milliseconds."
+        },
+        "isCompleted": {
+          "type": "boolean",
+          "description": "Whether the task has been completed."
+        },
+        "completedAtMillis": {
+          "type": "integer",
+          "description": "Epoch milliseconds when completed, or 0 if incomplete."
+        },
+        "priority": {
+          "type": "string",
+          "enum": ["high", "medium", "low"],
+          "description": "Task urgency level."
+        },
+        "category": {
+          "type": "string",
+          "description": "Work category tag such as 工作, 会议, 沟通, 个人."
+        },
+        "remindMinutesBefore": {
+          "type": "integer",
+          "description": "Minutes before deadline to trigger a reminder notification (0 to 1440)."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp; clients must submit FieldValue.serverTimestamp()."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server last-updated timestamp; clients must submit FieldValue.serverTimestamp()."
+        }
+      },
+      "required": [
+        "userId",
+        "title",
+        "notes",
+        "deadlineMillis",
+        "isCompleted",
+        "completedAtMillis",
+        "priority",
+        "category",
+        "remindMinutesBefore",
+        "createdAt",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/users/{userId}/tasks/{taskId}": {
+      "schema": {
+        "$ref": "#/entities/TaskItem"
+      },
+      "description": "Per-user work tasks synced in real time across devices."
+    }
+  }
+}
